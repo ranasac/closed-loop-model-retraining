@@ -1,20 +1,23 @@
 # Closed-Loop Model Retraining Design
 
-## 1. Purpose
-This design defines a practical closed-loop ML system where:
-- labels are managed at entity level,
-- labels from multiple providers are quality-checked,
-- model/data behavior is monitored in realtime and with lagged feedback,
-- retraining is triggered by data, drift, and performance conditions,
-- multiple models can run in parallel and be managed over time.
+## 1. Executive Summary
+This design upgrades a manually operated binary classification system into a maintainable, auditable, closed-loop ML platform. The system keeps entity-level label quality at the center, monitors online behavior in realtime and lagged feedback, and triggers retraining based on measurable conditions instead of ad hoc runs.
 
-The objective is to maximize correct flags and maintain high recall at high precision, while staying resilient to delayed labels and vendor/data changes.
+Primary outcomes:
+1. Higher recall at high precision without sacrificing control.
+2. Faster and safer model updates with clear rollback.
+3. Better maintainability for teams beyond the original author.
 
----
+## 2. Decision Principles
+1. Labels are first-class assets: poor labels cap model quality.
+2. Entity-level consistency is mandatory for training correctness.
+3. Delayed feedback requires strong realtime proxy monitoring.
+4. Retraining is expensive, so trigger it only on justified signals.
+5. Delivery and monitoring must be managed by CI/CD with full audit trail.
 
-## 2. Data Contracts
+## 3. Data Contracts
 
-### 2.1 Label / Feedback Schema
+### 3.1 Label and Feedback Schema
 
 ```text
 request_ts,
@@ -24,11 +27,12 @@ label (unclear, correct, incorrect),
 label_provider_id
 ```
 
-Design notes:
-- `entity_id` is the canonical grouping key. If one entity appears across multiple `request_id` values (for example, same candidate across multiple jobs), all events must retain the same `entity_id`.
-- Multiple `label_provider_id` values can label the same entity/request context.
+Rules:
+1. Use stable entity-level identity. The same entity across many request_id values must map to one entity_id.
+2. Accept multiple label sources per entity context.
+3. Track label provenance using label_provider_id for QA/QC and governance.
 
-### 2.2 Model Feature Schema
+### 3.2 Model Feature Schema
 
 ```text
 request_ts,
@@ -42,90 +46,74 @@ graph_embedding_1,
 graph_embedding_2
 ```
 
-Versioning rule:
-- If any existing feature definition changes, create a new versioned feature name (example: `num_feat_1_v2`).
-- Do not overwrite legacy feature columns used by active production models.
-
----
-
-## 3. Entity-Level Label QA/QC
-
-Entity-level labels enable consistency checks before model training.
-
-### 3.1 Aggregation Strategy
-For each `entity_id` (or `entity_id` + task context where applicable):
-- collect labels from all providers,
-- compute consensus label (for example `max_voted_label`),
-- compute `alignment_score` across providers.
-
-### 3.2 Training Weight Policy
-- If `alignment_score >= 0.8`: keep label at full sample weight.
-- If `alignment_score < 0.8`: either
-  - drop the sample, or
-  - keep it with reduced sample weight.
-
-This directly enforces the principle: model quality is bounded by label quality.
-
-Example pseudocode:
-
-```python
-from collections import Counter
-
-def resolve_entity_label(labels, alignment_threshold=0.8, low_weight=0.3):
-    """
-    labels: list[str] from multiple providers for one entity context
-    returns: (resolved_label, sample_weight, alignment_score, action)
-    """
-    counts = Counter(labels)
-    resolved_label, votes = counts.most_common(1)[0]
-    alignment_score = votes / len(labels)
-
-    if alignment_score >= alignment_threshold:
-        return resolved_label, 1.0, alignment_score, "keep"
-
-    # Policy switch: either drop or keep with lower weight
-    return resolved_label, low_weight, alignment_score, "downweight"
-```
-
----
+Feature versioning policy:
+1. Never mutate a feature used by active production models.
+2. If logic changes, create a new versioned feature, for example num_feat_1_v2.
+3. Keep old versions serving until all dependent models are retired.
 
 ## 4. End-to-End Architecture
 
 ```mermaid
 flowchart LR
-    A[Incoming Requests] --> B[Online Scoring Service]
-    B --> C[Predictions Log]
-    A --> D[Feature Store / Feature Snapshot]
+    A[Incoming Request] --> B[Scoring API]
+    A --> C[Feature Snapshot]
+    B --> D[Prediction Log: score + threshold + features]
 
-    E[Feedback / Labels from Providers] --> F[Label QA/QC Service]
-    F --> G[Entity-Level Label Table]
+    E[Feedback Providers] --> F[Label QA and Consensus]
+    F --> G[Entity-level Label Table]
 
     C --> H[Training Data Builder]
-    D --> H
     G --> H
+    D --> H
 
-    H --> I[OOT Test Split Latest Data]
-    H --> J[Train/Val Split GroupShuffleSplit by entity_id]
-
-    J --> K[Model Training]
+    H --> I[OOT Test Split]
+    H --> J[GroupShuffleSplit by entity_id]
+    J --> K[Train and Validate]
     K --> L[Model Registry]
     L --> M[Model Manager]
-    M --> B
 
-    B --> N[Realtime Monitoring]
-    C --> O[Lagged Monitoring as Labels Arrive]
-    N --> P[Alerting: Slack / PagerDuty]
-    O --> P
-    P --> Q[Retraining Trigger Service]
-    Q --> K
+    M --> N[Shadow]
+    N --> O[Canary]
+    O --> P[Production]
+
+    B --> Q[Realtime Monitoring]
+    D --> R[Lagged Monitoring]
+    Q --> S[Alerting: Slack and PagerDuty]
+    R --> S
+    S --> T[Retraining Trigger Service]
+    T --> K
 ```
 
----
+## 5. Label QA/QC at Entity Level
 
-## 5. Training Data Build and Splits
+### 5.1 Aggregation and Alignment
+For each entity_id context:
+1. Aggregate labels from all providers.
+2. Compute max_voted_label.
+3. Compute alignment_score.
 
-### 5.1 Training Data Build
-Training data is built by joining label table with model feature table on request-level keys while preserving `entity_id`.
+### 5.2 Usage Policy in Training
+1. If alignment_score >= 0.8, keep with full weight.
+2. If alignment_score < 0.8, drop or include with reduced sample weight.
+3. Exclude unclear labels from core supervised training unless explicitly modeled.
+
+```python
+from collections import Counter
+
+def resolve_entity_label(labels, alignment_threshold=0.8, low_weight=0.3):
+    counts = Counter(labels)
+    label, votes = counts.most_common(1)[0]
+    alignment_score = votes / len(labels)
+
+    if alignment_score >= alignment_threshold:
+        return label, 1.0, alignment_score, "keep"
+    return label, low_weight, alignment_score, "downweight_or_drop"
+```
+
+## 6. Training Dataset and Split Strategy
+
+### 6.1 Build Training Dataset
+Join label_table and model_features on request keys while preserving entity identity.
 
 ```sql
 SELECT
@@ -146,183 +134,221 @@ JOIN label_table l
 WHERE l.label IN ('correct', 'incorrect', 'unclear');
 ```
 
-### 5.2 Split Strategy
-1. Create an out-of-time test set from latest data.
-2. For remaining older data, split train/val using random `GroupShuffleSplit` by `entity_id`.
-3. Ensure same `entity_id` cannot appear in both train and val.
+### 6.2 Split Strategy
+1. Reserve the newest slice as out-of-time test.
+2. Split the remainder into train and validation using GroupShuffleSplit by entity_id.
+3. Guarantee no entity_id leakage across train and validation.
 
 ```python
-import pandas as pd
 from sklearn.model_selection import GroupShuffleSplit
 
-# df has columns: request_ts, entity_id, label, feature columns...
 df = df.sort_values("request_ts")
+cutoff = int(len(df) * 0.8)
 
-# Example OOT split: latest 20% by time as test
-cutoff_idx = int(len(df) * 0.8)
-oot_test = df.iloc[cutoff_idx:].copy()
-train_val = df.iloc[:cutoff_idx].copy()
+oot_test = df.iloc[cutoff:].copy()
+train_val = df.iloc[:cutoff].copy()
 
-# Group split for train/val
 splitter = GroupShuffleSplit(n_splits=1, test_size=0.2, random_state=42)
-train_idx, val_idx = next(
-    splitter.split(train_val, groups=train_val["entity_id"])
-)
+train_idx, val_idx = next(splitter.split(train_val, groups=train_val["entity_id"]))
 
 train_df = train_val.iloc[train_idx].copy()
 val_df = train_val.iloc[val_idx].copy()
 ```
 
----
+## 7. Monitoring Framework
 
-## 6. Monitoring and Alerting
+All monitors, thresholds, and dashboards are managed as code in GitHub with CI/CD deployment to Datadog or Grafana.
 
-Monitoring should be implemented in Datadog (or Grafana equivalent) with:
-- metric/chart definitions in a GitHub repository,
-- CI/CD for threshold and monitor updates,
-- Slack/PagerDuty integrations for alerts.
+### 7.1 Online Realtime Monitoring
 
-### 6.1 Online / Realtime Model Monitoring
+Flag rate alerts:
+1. High priority:
+   - rolling_avg_1min / rolling_avg_1day > 1.8
+   - rolling_avg_1min / rolling_avg_1day < 0.2
+   - flag_rate == 0
+2. Medium priority:
+   - rolling_avg_1min / rolling_avg_1day > 1.5
+   - rolling_avg_1min / rolling_avg_1day < 0.5
+3. Low priority:
+   - rolling_avg_24hr / rolling_avg_72hr > 1.3
+   - rolling_avg_24hr / rolling_avg_72hr < 0.7
 
-#### A. Flag Rate Monitoring (using `predict_proba` decisioning)
+Raw score shift alert:
+1. High priority when median_model_score_1d / median_model_score_7d < 0.5 or > 1.5.
 
-High priority:
-- if `rolling_avg_1min / rolling_avg_1day > 1.8` -> alert: too high flag_rate
-- if `rolling_avg_1min / rolling_avg_1day < 0.2` -> alert: too low flag_rate
-- if `flag_rate == 0` -> high-priority alert: no ML flags raised
+### 7.2 Feature Drift Monitoring
+1. Univariate checks with t-test on hourly or daily numerical means.
+2. Multivariate checks using second-order and third-order feature interaction metrics.
+3. Alert if p_value < 0.05.
 
-Medium priority:
-- if `rolling_avg_1min / rolling_avg_1day > 1.5` -> alert: flag rate 50% higher
-- if `rolling_avg_1min / rolling_avg_1day < 0.5` -> alert: flag rate 50% lower
-
-Low priority:
-- if `rolling_avg_24hr / rolling_avg_72hr > 1.3` -> alert: flag rates trending higher in last 1 day
-- if `rolling_avg_24hr / rolling_avg_72hr < 0.7` -> alert: flag rates trending lower in last 1 day
-
-#### B. Raw Model Score Monitoring
-Flag-rate alone can hide sub-threshold score drift.
-
-High priority:
-- if `median_model_score_1d / median_model_score_7d < 0.5` or `> 1.5` -> alert: median model scores shifted; check input distributions
-
-### 6.2 Input Feature Drift Monitoring
-
-Options:
-- custom in-house checks,
-- vendor tools (for example WhyLabs / Anomalo).
-
-Univariate:
-- numerical features: run t-test on hourly/daily means,
-- if `p_value < 0.05` -> alert: feature may be drifting/spiking.
-
-Multivariate:
-- create 2nd-order and 3rd-order feature group metrics,
-- run t-test on those grouped metrics,
-- if `p_value < 0.05` -> alert: feature interaction may be drifting/spiking.
-
-### 6.3 SHAP Monitoring
-Daily sampled SHAP computation for top 50 features.
-
-- if `avg_shap_value_last_1d / avg_shap_value_last_7d > 1.8` or `< 0.3` -> alert: feature impact to model has potentially changed.
-
----
-
-## 7. Lagged (Labeled) Performance Monitoring
-
-Because feedback arrives after 1-2 weeks, track metrics as labels arrive:
-- precision of flags,
-- recall of flags,
-- recall@expected_precision,
-- calibration ECE (expected calibration error).
-
-Alert condition:
-- if any metric drops by more than 50% versus prior 4-week level -> alert: model performance degraded; evaluate retraining.
-
----
-
-## 8. Retraining Triggers
-
-Retraining can be triggered manually, via UI button (for example Streamlit), or by Kafka/service-queue event.
+### 7.3 SHAP Monitoring
+1. Compute daily sampled SHAP values for top 50 features.
+2. Alert when avg_shap_value_last_1d / avg_shap_value_last_7d > 1.8 or < 0.3.
 
 ```mermaid
 flowchart TD
-    A[Trigger Check] --> B{New data/features available?}
-    B -->|Yes| R[Start Retraining]
-    B -->|No| C{Performance drop?}
-    C -->|Recall@ExpectedPrecision drop >30% for 2 days| R
-    C -->|No| D{Anomaly / Drift present?}
-    D -->|Significant SHAP or t-test spike| R
-    D -->|No| E{Cadence reached?}
-    E -->|latest_model_trained_since > 2 months| R
-    E -->|No| F[No retrain]
+    A[Realtime and Daily Metrics] --> B{Threshold Breach?}
+    B -->|No| C[Continue Monitoring]
+    B -->|Yes| D[Create Alert Event]
+    D --> E[Slack Notification]
+    D --> F[PagerDuty Notification]
+    D --> G[Incident Ticket]
+    G --> H[Root Cause: Data, Model, Vendor, Infra]
 ```
 
-Trigger categories:
-1. New data/features available
-   - new vendor data ingested and featurized,
-   - existing features updated and version incremented,
-   - new user cohort/market available.
-2. Model performance drop
-   - recall@expected_precision drop larger than 30% for 2 consecutive days.
-3. Significant anomaly/drift
-   - SHAP spikes or feature t-test spikes.
-4. Retraining cadence reached
-   - latest model age exceeds 2 months.
+## 8. Lagged Performance Monitoring
 
----
+As labels arrive after days or weeks, track:
+1. Precision of flags.
+2. Recall of flags.
+3. Recall at expected precision.
+4. Calibration ECE.
 
-## 9. Multiple Models Framework
+Alert policy:
+1. If any metric drops by more than 50 percent versus prior four-week baseline, raise degradation alert.
 
-Design principle:
-- prioritize correct flags and high recall at high precision, whether from one model or several.
+## 9. Retraining Trigger Policy
 
-Execution:
-- run multiple models in parallel on the same input features,
-- if any eligible model flags a case, flag the case,
-- use a `model_manager` policy to onboard, evaluate, and retire models over time.
+Retraining trigger sources:
+1. Manual execution.
+2. One-click UI action, for example Streamlit.
+3. Event-driven trigger via Kafka or queue.
 
-Example serving pseudocode:
+Automated trigger conditions:
+1. New data or features available.
+2. Recall at expected precision drops >30 percent for 2 consecutive days.
+3. Significant SHAP or feature drift anomalies.
+4. Model age exceeds two months.
 
-```python
-def ensemble_flag(models, feature_row, threshold_map):
-    """Return flagged=True if any active model flags."""
-    decisions = []
-    for model_name, model in models.items():
-        score = model.predict_proba(feature_row)[0, 1]
-        decisions.append(score >= threshold_map[model_name])
-    return any(decisions)
+```mermaid
+flowchart TD
+    A[Check Triggers] --> B{New data or new features?}
+    B -->|Yes| R[Trigger Retraining]
+    B -->|No| C{Performance drop >30% for 2 days?}
+    C -->|Yes| R
+    C -->|No| D{Significant drift or SHAP anomalies?}
+    D -->|Yes| R
+    D -->|No| E{Model age > 2 months?}
+    E -->|Yes| R
+    E -->|No| F[No Retrain]
 ```
 
----
+## 10. Model Lifecycle and Promotion
 
-## 10. Disagreement Handling
+### 10.1 Multi-model Execution
+1. Multiple active models can score the same record.
+2. If any approved model flags, send a flag.
+3. Retire weak models through a model_manager policy.
 
-### 10.1 Models Disagreement
-When two models disagree on a case, treat as one of:
-- shifting trend,
-- anomaly,
-- edge case.
+### 10.2 Promotion Gate
+Promotion criteria:
+1. Candidate model beats production on target metric, preferably recall at expected precision.
+2. Candidate passes staging and shadow tests.
+3. No dead-letter queue or serving pipeline failures.
+4. Unit tests pass for edge cases such as missing values.
+
+Promotion mechanism:
+1. Merge approved PR to CI/CD pipeline.
+2. Update production model configuration from versioned artifact.
+3. Keep rollback ready by reverting PR/config quickly.
+4. Avoid releases before weekends and holidays.
+
+### 10.3 Deployment Strategy Choice
+Accepted approach:
+1. Canary deployment, because model errors are high-impact and feedback is delayed.
+2. Rollout path: Shadow -> Canary -> Full.
+
+Rejected for now:
+1. Blue-green deployment due to current operational maturity and missing dedicated traffic-routing service.
+
+```mermaid
+flowchart LR
+    A[Model in Registry] --> B[Shadow: 0% decision impact]
+    B --> C[Canary: 1-5-20-50% traffic]
+    C --> D{Guardrails healthy?}
+    D -->|Yes| E[100% Production]
+    D -->|No| F[Rollback to Previous Model]
+```
+
+## 11. Disagreement Handling
+
+### 11.1 Model-vs-Model Disagreement
+Possible causes:
+1. New trend.
+2. Data anomaly.
+3. True edge case.
 
 Actions:
-- shifting trend: send to review queue; calculate precision on disagreed cases,
-- anomaly: verify whether anomaly monitors also fired and align interpretation,
-- edge case: improve label QA/QC and labeling quality.
+1. Route disagreements to review queue.
+2. Measure precision on disagreement slice.
+3. Correlate with anomaly monitors.
+4. Improve labels QA/QC if disagreement maps to noisy labels.
 
-### 10.2 Signals Disagreement
-If upstream signals conflict with model behavior:
-- check latest signals code changes,
-- confirm with vendors whether they changed data behavior,
-- if signals are fine, inspect label alignment score.
+### 11.2 Signal-vs-Model Disagreement
+1. Check recent signal code changes.
+2. Confirm external vendor behavior changes.
+3. Validate label alignment score.
+4. Add targeted heuristic override rule for known high-risk combinations.
 
-Remedy:
-- create a heuristic override rule running in parallel to ML decisions for specific signal combinations.
+## 12. Prediction Log and Offline Controls
 
----
+Maintain a continuously growing prediction log containing:
+1. Raw model score.
+2. Threshold used.
+3. Final decision.
+4. Input feature snapshot.
+5. Model version metadata.
 
-## 11. Operational Guardrails
+Use this log to build offline recall recovery controls, including detection of entities missed by realtime paths.
 
-- Keep all monitor definitions and thresholds in version control with CI/CD.
-- Ensure alerts route to Slack and PagerDuty with severity levels.
-- Preserve feature backward compatibility via explicit feature versioning.
-- Keep label QA/QC metrics auditable per entity and per provider.
-- Document every retraining trigger cause in model metadata.
+## 13. Constraints and Design Responses
+
+### 13.1 Delayed and Incomplete Feedback
+Response:
+1. Estimate recent performance with lagged labels.
+2. Use realtime proxy metrics and threshold controls.
+3. Add manual review channels for faster explicit labels.
+
+### 13.2 Expensive Retraining
+Response:
+1. Retrain only when trigger conditions are met.
+2. Use sample weighting to emphasize recent and high-purity labels.
+
+### 13.3 Costly Downstream Reversal
+Response:
+1. Regularly re-optimize decision thresholds using arriving feedback.
+2. Prefer conservative rollout and strong rollback guardrails.
+
+### 13.4 Maintainability Requirement
+Response:
+1. Publish design manuals and troubleshooting docs.
+2. Use model governance and clear ownership.
+3. Favor stateless service design.
+4. Apply SOLID coding principles.
+5. Provision infrastructure using Terraform for auditable changes.
+
+## 14. Explicit Non-choices and Assumptions
+
+Accepted:
+1. Canary rollout for safer behavior validation.
+2. Class imbalance handling using class weights.
+3. Label-noise handling with consensus, alignment, and sample weights.
+4. Drift-first operations because realtime true labels are delayed.
+5. GitHub CI/CD as default control plane for monitors and model config.
+
+Not chosen now:
+1. Blue-green as primary model rollout strategy.
+2. Training on unclear labels in core binary objective.
+
+## 15. Operational Checklist
+
+Before promoting a model:
+1. Data contract validation passed.
+2. Label QA/QC metrics within acceptable range.
+3. OOT and validation metrics passed.
+4. Shadow and canary guardrails healthy.
+5. Alert routes verified in Slack and PagerDuty.
+6. Rollback path tested.
+7. Governance metadata and release notes published.
+
+

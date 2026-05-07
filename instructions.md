@@ -100,6 +100,17 @@ For the situations below, a model retraining pipeline gets triggered either manu
 All we care about is correct flags and high recall at high precsion either coming from single model or multiple models. Instead of always trying replace the new ML model, we should have multiple models evaluating the input features and if any model flags, then flag that case. In this scenario, we get benefit of multiple models working in parallel, but we do need to manage and retire these models overtime using a model_manager strategy.
 
 
+# Model Promotion Gate
+ If we only want a single ML model in prod, then we need to replace the existing prod model with the newly trained ML model. 
+ ** Criteria **: promote if the target metric (which should probably be Recall@ExpectedPrecision) is higher than prod model
+** Testing **: make sure new ML model is working fine in Staging and Shadow mode. We don't see any dead letter queues prior to promoting to prod. 
+    Stability testing: Write unit tests to check model performance on edge cases (such as missing values etc.)
+
+ ** How promotion happens **: Once the metrics criteria and testing is successfully completed. Use a CI/CD pipeline (build one if not already present), where upon a PR merge, the downstream prod model configs change. Be ready to rollback the PR if something goes wrong. 
+    ** Note **: avoid deploying new models just prior to Holidays and Weekends.
+
+
+
 # Models Disagreement
 When two models disagree on a given case, that may mean it is either a new trend, or it is an edge case, where both labels are likely given the histroical labels. In these cases, do the following
     - Shifting Trend: create a review queue to manually check these cases to confirm new trend. Otherwise, wait for some more new labeled data to arrive. Calculate the precision on the disagreed cases
@@ -114,16 +125,50 @@ When two models disagree on a given case, that may mean it is either a new trend
     **Remedy** - Create a heuristic rule that runs in parallel to ML model to override ML model decisions for particular signals combinations
 
 
+## A growing prediction log of every score the live model has emitted, with the input features.
+We should atleast use to create Offline controls where we can flag certain entities whom we missed in realtime evaluation.
+** This should give us a big lift in additional Recall **
 
 
 
 
+# Constraings
+ ### Feedback is delayed (days to weeks) and incomplete.
+    1. Use the labeled data to estimate model performance on previous week's actions
+    2. Rely on realtime metrics and adjust model thresholds in realtime to make sure flag rate is in the line of what's expected
+    3. Try to hire a third party manual reviewers to get explicit labels faster
+
+### Retraining is computationally expensive — assume you can't do it on every new label.
+    1. We should retrain only when model_retraining trigger fires (as explained in Model Retraining Trigger section)
+    2. Use sample weights to make sure the model learns the most important/ recent trends
+
+### The downstream decision is costly to reverse once made,
+    1. This means we need to regularly optimize ML model thresholds based on feedback labels arriving
+
+### design has to be maintainable by people who aren't you.
+    1. Make sure to properly document design manuals and troubleshooting guide
+    2. Align on a model governance method which makes other stakeholders are aware 
+    3. Use SOLID coding principles
+    4. Make the code as "Stateless" as possible so that it can be maintained and scaled easily
+    5. Use "Terraform" for infra provisining and maintainece, so we have full audit log of all infra changes
 
 
 
-
-
-
-
-
-# Label Alignment
+## Explicit choices.
+ ### What I considered accepted/ rejected
+ 1. Canary deployment is better suited for this use case (if we can allow 2 models at a time)
+    - A bad model update can immediately change real-world decisions. Canary limits blast radius since our feedback is delayed
+ 2. Blue green deployment is not currently recommended
+    - Our system is pretty manual right now. We would need a dedicated service to route traffic to enable blue-green deployment.
+3. Class imbalance considered
+    - Use class weights to scale loss function
+4. Labels noise considered
+    - Create labels QA/QC process using Consensus and Alignment scores
+    - Don't use "uncertain" labels for ML models
+    - Use "sample weights" to guide models towards highest purity labels and also make newer data labels as more sample weight than older labels
+5. Anomaly detection considered
+    - Since feedback loop is delayed, we can't get model performance in realtime
+    - Hence, monitor any anomalies in incoming features distribution and create a pipeline to take action in realtime based on those anomalies
+6. Github CI/CD framework
+    - It provides a full audit log and quick rollback mechanism
+    - Unit testing is embedded to test on edge cases
