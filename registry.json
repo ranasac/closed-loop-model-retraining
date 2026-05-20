@@ -1,0 +1,10 @@
+{
+  "active": {
+    "version": "v1",
+    "artifact_path": "models/model.pkl",
+    "trained_on": "data/applications_v1.csv",
+    "accuracy": 0.9994,
+    "created_at": "2025-08-14"
+  },
+  "candidates": []
+}
