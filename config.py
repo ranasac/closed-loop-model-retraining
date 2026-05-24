@@ -40,12 +40,9 @@ APPLICATION_V2_DATA_DETAILS = VersionedDataDetails(
     features=[
     "application_completion_seconds",
     "hour_of_day",
-    "email_domain_risk_score",
     "account_age_days",
-    "num_applications_last_24h",
     "ip_location_mismatch_km",
     "is_vpn_or_proxy",
-    "profile_trust_score"
     ]
 )
 

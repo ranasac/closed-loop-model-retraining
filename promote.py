@@ -20,6 +20,7 @@ from modeling.models_api import BaseMlModel
 from modeling.data_preprocessor import FraudDataPreprocessor
 from config import REGISTRY_PATH, DATA_DIR
 from dataloader.load_data import FraudDataLoader
+from modeling.registry_models_api import ModelEntry
 
 
 def load_model(path):
@@ -73,21 +74,16 @@ def main():
     candidate_index = None
     for idx, c in enumerate(registry.get("candidates", [])):
         if c["artifact_path"] == candidate_path_str:
-            candidate_meta = c
+            candidate_meta = ModelEntry.model_validate(c)
             candidate_index = idx
             break
 
-    # Fallback structure just in case the filename passed wasn't declared in json ahead of time
+    # Fail fast if candidate model metadata is not found in registry candidates list to prevent silent errors downstream. Candidate model must be registered in registry.json before promotion.
     if not candidate_meta:
-        candidate_meta = {
-            "version": candidate_path_obj.stem,
-            "artifact_path": candidate_path_str,
-            "trained_on": str(Path(DATA_DIR, data_filename).relative_to(Path(__file__).parent)),
-            "created_at": datetime.today().strftime('%Y-%m-%d')
-        }
+        raise ValueError(f"Candidate model path {candidate_path_str} not found in registry candidates. Please ensure the candidate model is registered in registry.json before promotion.")
 
     active_path = registry["active"]["artifact_path"]
-    active_model_meta = registry["active"].copy()
+    active_model_meta = ModelEntry.model_validate(registry["active"])
     active_model = load_model(active_path)
     candidate_model = load_model(candidate_path_str)
 
@@ -101,13 +97,13 @@ def main():
 
     for key, (model, meta) in model_dict.items():
         if not hasattr(model, 'predict_proba'):
-            raise ValueError(f"Model {meta['version']} does not have predict_proba method. Ensure it is a scikit-learn compatible classifier.")
+            raise ValueError(f"Model {meta.version} does not have predict_proba method. Ensure it is a scikit-learn compatible classifier.")
         
         # load data
         data_loader = FraudDataLoader()
-        input_features = data_loader.get_features_for_version(filename=meta['trained_on'])
-        print(f"Input features for {meta['trained_on']}: {input_features}")
-        df = data_loader.load_data(filename=meta['trained_on'])
+        input_features = data_loader.get_features_for_version(filename=meta.trained_on)
+        print(f"Input features for {meta.trained_on}: {input_features}")
+        df = data_loader.load_data(filename=meta.trained_on)
 
         # create preprocessor instance with input features for validation and preprocessing
         preprocessor = FraudDataPreprocessor(input_features=input_features)
@@ -121,7 +117,7 @@ def main():
         model_eval_report = evaluate_model(model, X, y)
         print("checking for prediction errors...")
         if not check_no_errors(model, X):
-            raise ValueError(f"Model {meta['version']} failed prediction error check.")
+            raise ValueError(f"Model {meta.version} failed prediction error check.")
         
         model_latency = get_model_latency(model, X)
         model_eval_report["latency_ms"] = round(model_latency, 2)
@@ -147,12 +143,12 @@ def main():
         registry["history"].append(old_active)
 
         # Update candidate metadata dictionary with actual live evaluated metrics 
-        candidate_meta["accuracy"] = round(float(model_dict['candidate'][2]['accuracy']), 4)
-        candidate_meta["pr_auc"] = round(float(model_dict['candidate'][2]['pr_auc']), 4)
-        candidate_meta["recall_at_95precision"] = round(float(model_dict['candidate'][2]['recall_at_95precision']), 4)
+        candidate_meta.accuracy = round(float(model_dict['candidate'][2]['accuracy']), 4)
+        candidate_meta.pr_auc = round(float(model_dict['candidate'][2]['pr_auc']), 4)
+        candidate_meta.recall_at_95precision = round(float(model_dict['candidate'][2]['recall_at_95precision']), 4)
 
         # Swap candidate to active seat
-        registry["active"] = candidate_meta
+        registry["active"] = candidate_meta.model_dump()  # Convert back to dict for JSON serialization
 
         # Remove candidate entry cleanly out of selection list if it matches
         if candidate_index is not None:
@@ -162,7 +158,7 @@ def main():
         with open(REGISTRY_PATH, "w") as f:
             json.dump(registry, f, indent=2)
             
-        print(f"Successfully migrated {candidate_meta['version']} to active production reference inside registry.json.")
+        print(f"Successfully migrated {candidate_meta.version} to active production reference inside registry.json.")
     else:
         print("KEEP ACTIVE")
 

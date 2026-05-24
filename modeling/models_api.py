@@ -11,6 +11,7 @@ from sklearn.preprocessing import StandardScaler, OneHotEncoder
 from sklearn.impute import SimpleImputer
 from sklearn.base import BaseEstimator, TransformerMixin, OneToOneFeatureMixin
 from sklearn.metrics import accuracy_score, precision_recall_curve, auc
+from modeling.registry_models_api import ModelEntry
 
 import lightgbm as lgb
 import numpy as np
@@ -227,41 +228,30 @@ class BaseMlModel:
     
     def register_model(self, model_name, trained_on, X_test, y_test, target_precision=0.95):
         """
-        Registers a newly trained model as a candidate in the central registry,
-        automatically calculating production metrics and incrementing the version.
+        Registers a newly trained model as a candidate in the central registry using Pydantic,
+        automatically enforcing type compliance, evaluating metrics, and incrementing versions.
         """
+        from modeling.registry_models_api import RegistryModel, ModelEntry
+        import re
 
-        # 1. Load existing registry data or build a clean fallback structure
+        # 1. Load and parse existing registry data through Pydantic model validation
         if os.path.exists(REGISTRY_PATH):
-            with open(REGISTRY_PATH, "r") as f:
-                try:
-                    registry_data = json.load(f)
-                except json.JSONDecodeError:
-                    registry_data = {"active": {}, "candidates": [], "history": []}
+            try:
+                registry = RegistryModel.load_from_registry(REGISTRY_PATH)
+            except (json.JSONDecodeError, Exception):
+                # Fallback instance if the file is completely empty or corrupted
+                registry = RegistryModel(active=None, candidates=[], history=[])
         else:
-            registry_data = {"active": {}, "candidates": [], "history": []}
+            registry = RegistryModel(active=None, candidates=[], history=[])
 
-        # Ensure all required root array keys are present
-        for key in ["candidates", "history"]:
-            if key not in registry_data:
-                registry_data[key] = []
-
-        # 2. Extract versions across Active, Candidates, and History to determine the next version
+        # 2. Extract versions across Active, Candidates, and History to determine the next sequential version
         all_versions = []
-        
-        # Check active slot
-        if registry_data.get("active") and "version" in registry_data["active"]:
-            all_versions.append(registry_data["active"]["version"])
-            
-        # Check candidates list
-        for candidate in registry_data["candidates"]:
-            if "version" in candidate:
-                all_versions.append(candidate["version"])
-                
-        # Check history array
-        for historical in registry_data["history"]:
-            if "version" in historical:
-                all_versions.append(historical["version"])
+        if registry.active:
+            all_versions.append(registry.active.version)
+        for candidate in registry.candidates:
+            all_versions.append(candidate.version)
+        for historical in registry.history:
+            all_versions.append(historical.version)
 
         # Dig out integer version IDs (e.g., extracting 1 from "v1")
         version_numbers = []
@@ -274,37 +264,46 @@ class BaseMlModel:
         next_version_num = max(version_numbers) + 1 if version_numbers else 1
         next_version_str = f"v{next_version_num}"
 
-        # 3. Calculate full structural validation metrics via self.evaluate
+        # 3. Calculate full structural evaluation metrics on your test set
         eval_metrics = self.get_trained_classifier_metrics(
             X_test, y_test, target_precision=target_precision
         )
 
-
-        # 4. Construct candidate metadata tracking block matching promote.py requirements
+        # 4. Resolve relative file path representations
         artifact_abs_path = os.path.join(self.model_dir, f"{model_name}.pkl")
         artifact_relative_path = os.path.relpath(artifact_abs_path, start=os.getcwd())
+        
         if os.path.isabs(str(trained_on)):
             trained_on_relative = os.path.relpath(str(trained_on), start=os.getcwd())
         else:
             trained_on_relative = str(trained_on)
 
-        new_candidate = {
+        # 5. Package evaluation payload into a flat dictionary
+        candidate_payload = {
             "version": next_version_str,
             "artifact_path": artifact_relative_path,
             "trained_on": trained_on_relative,
-            "created_at": datetime.today().strftime('%Y-%m-%d')
+            "created_at": datetime.today().strftime('%Y-%m-%d'),
+            "accuracy": round(float(eval_metrics.get("accuracy", 0.0)), 4),
+            "pr_auc": round(float(eval_metrics.get("pr_auc", 0.0)), 4),
+            "recall_at_95precision": round(float(eval_metrics.get(f"recall_at_{int(target_precision * 100)}precision", 0.0)), 4)
         }
 
-        # Safely convert all metrics values to clean Python floats for clean JSON formatting
-        for metric_name, metric_val in eval_metrics.items():
-            new_candidate[metric_name] = round(float(metric_val), 4)
+        # Handle any extra metrics that might be present dynamically in eval_metrics
+        for k, v in eval_metrics.items():
+            if k not in ["accuracy", "pr_auc", f"recall_at_{int(target_precision * 100)}precision"]:
+                candidate_payload[k] = round(float(v), 4)
 
-        # 5. Append candidate profile into the pool 
-        registry_data["candidates"].append(new_candidate)
+        # 6. Instantiate via Pydantic ModelEntry to automatically trigger runtime type-checking
+        new_candidate_model = ModelEntry(**candidate_payload)
 
-        # 6. Atomic save back to system storage
+        # Append candidate profile into the pool 
+        registry.candidates.append(new_candidate_model)
+
+        # 7. Atomic save using Pydantic's serialization machine
         with open(REGISTRY_PATH, "w") as f:
-            json.dump(registry_data, f, indent=2)
+            # model_dump_json ensures native serialization of internal types
+            f.write(json.dumps(registry.model_dump(), indent=2))
 
         print(f"Successfully registered model candidate as '{next_version_str}' in {REGISTRY_PATH}")
         print(f"Evaluated Test Metrics: {eval_metrics}")

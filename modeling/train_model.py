@@ -32,14 +32,14 @@ def main(input_data_filename,
     print(f"Input features for {input_data_filename}: {input_features}")
 
     # Preprocess data if needed (e.g., handle missing values, encode categorical features)
-    preprocessor = FraudDataPreprocessor(features_to_drop=features_to_drop, variance_threshold=variance_threshold)
+    preprocessor = FraudDataPreprocessor(features_to_drop=features_to_drop, variance_threshold=variance_threshold, input_features=input_features)
     df = preprocessor.preprocess_inputs(df)
     X, y = preprocessor.split_features_and_target(df, target_column=target_column)
     class_imbalance = preprocessor.get_class_imbalance(y)
     print(f"Class imbalance: {class_imbalance}")
 
     X_train, X_val, X_test, y_train, y_val, y_test = preprocessor.split_train_test(X, y)
-    categorical_features, numerical_features = preprocessor.get_categorical_and_numerical_features(X_train)
+    categorical_features, numerical_features = preprocessor.get_categorical_and_numerical_features(X_train[input_features])
     print(f"Categorical features: {categorical_features}")
     print(f"Numerical features: {numerical_features}")
 
@@ -74,7 +74,7 @@ if __name__ == "__main__":
     # create argparse for params
     
     parser = argparse.ArgumentParser(description="Train fraud detection models.")
-    parser.add_argument("--input_data_filename", type=str, default="applications_v1.csv", help="Input data filename")
+    parser.add_argument("--input-data-filename", type=str, default="applications_v1.csv", help="Input data filename")
     parser.add_argument("--features_to_drop", type=str, nargs='*', default=None, help="Features to drop")
     parser.add_argument("--variance_threshold", type=float, default=0.0, help="Variance threshold for feature selection")
     parser.add_argument("--target_column", type=str, default="label", help="Target column name")

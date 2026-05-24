@@ -35,7 +35,7 @@ class FraudDataPreprocessor(BaseDataPreprocessor):
         self.validate_input_features(X)
         X = self.drop_features_adhoc_features(X)
         X = self.drop_features_containing_zero_variance(X)
-        self.categorical_features, self.numerical_features = self.get_categorical_and_numerical_features(X)
+        self.categorical_features, self.numerical_features = self.get_categorical_and_numerical_features(X[self.input_features])
         return X
     
     def get_features(self):
