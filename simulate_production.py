@@ -9,6 +9,7 @@ You don't need to run this — the CSVs are checked in.
 import pickle
 from datetime import datetime, timedelta
 from pathlib import Path
+from modeling.models_api import ModelAPI
 
 import numpy as np
 import pandas as pd

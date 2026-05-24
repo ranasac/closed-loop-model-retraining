@@ -6,5 +6,15 @@
     "accuracy": 0.9994,
     "created_at": "2025-08-14"
   },
-  "candidates": []
+  "candidates": [
+
+    {
+        "version": "v2",
+        "artifact_path": "models/logistic_regression_20260523_2352.pkl",
+        "trained_on": "data/applications_v1.csv",
+        "accuracy": 0.9996,
+        "created_at": "2026-05-23"
+      }
+    ],
+  "history": []
 }
