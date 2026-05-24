@@ -55,7 +55,14 @@ def load_model_and_meta(model_path=None):
 
 
 def score(application: dict, model, features, version, threshold=THRESHOLD) -> dict:
-    X = pd.DataFrame([application])[features]
+    import numpy as np
+    # Ensure all required features are present, fill missing with NaN
+    row = {feat: application.get(feat, np.nan) for feat in features}
+    import sys
+    missing_features = [feat for feat in features if feat not in application]
+    if missing_features:
+        print(f"Warning: missing features in input will be filled with NaN: {missing_features}", file=sys.stderr)
+    X = pd.DataFrame([row])[features]
     proba = float(model.predict_proba(X)[0, 1])
     return {
         "model_version": version,
@@ -64,16 +71,40 @@ def score(application: dict, model, features, version, threshold=THRESHOLD) -> d
     }
 
 
+def create_sample_input():
+    sample = {
+        "application_completion_seconds": 45.0,
+        "hour_of_day": 3,
+        "email_domain_risk_score": 0.7,
+        "account_age_days": 4,
+        "num_applications_last_24h": 9,
+        "ip_location_mismatch_km": 3200.0,
+        "is_vpn_or_proxy": 1,
+        "profile_trust_score": 0.2,
+    }
+    return sample
 
-def main():
-    parser = argparse.ArgumentParser(description="Score an application using a model.")
-    parser.add_argument("--model", type=str, default=None, help="Path to model .pkl file (default: use active model in registry)")
-    parser.add_argument("--data", type=str, default=None, help="Data CSV to score (default: use model's trained_on field)")
-    parser.add_argument("--row", type=int, default=0, help="Row index to score from the data file (default: 0)")
-    parser.add_argument("--threshold", type=float, default=THRESHOLD, help="Threshold for block/allow decision (default: 0.5)")
-    args = parser.parse_args()
 
-    model, model_meta = load_model_and_meta(args.model)
+def create_all_missing_input(features):
+    import numpy as np
+    return {feat: np.nan for feat in features}
+
+
+def create_empty_input():
+    return {}
+
+
+
+def get_prediction(
+    model_path=None,
+    data=None,
+    row=0,
+    predict_on_sample=False,
+    predict_on_all_missing_inputs=False,
+    predict_on_empty_input=False,
+    threshold=THRESHOLD
+):
+    model, model_meta = load_model_and_meta(model_path)
     # Patches legacy model profiles to match modern scikit-learn namespaces safely
     for model_obj in [model]:
         classifier = model_obj.named_steps['classifier'] if hasattr(model_obj, 'named_steps') else model_obj
@@ -81,21 +112,53 @@ def main():
             classifier.multi_class = 'deprecated'
 
     trained_on = model_meta.trained_on
-    data_file = args.data if args.data else trained_on
+    import sys
+    print(f"Model trained on: {trained_on}", file=sys.stderr)
+    data_file = data if data else trained_on
     # Remove any leading directories for mapping lookup
     data_key = Path(data_file).name
-    if data_key not in versioned_data_mapping:
-        raise ValueError(f"Data file {data_key} not found in versioned_data_mapping.")
-    features = versioned_data_mapping[data_key].features
+    trained_on_key = Path(trained_on).name
+    if data_key != trained_on_key:
+        print(f"Warning: Data file {data_key} does not match model's trained_on {trained_on_key}. Ensure the correct data file is being used for scoring.", file=sys.stderr)
+    if trained_on_key not in versioned_data_mapping:
+        raise ValueError(f"Data file {trained_on_key} not found in versioned_data_mapping.")
+    features = versioned_data_mapping[trained_on_key].features
 
     # Load data using dataloader
     data_loader = FraudDataLoader()
-    df = data_loader.load_data(filename=data_key)
-    if args.row >= len(df):
-        raise IndexError(f"Row {args.row} is out of bounds for data file with {len(df)} rows.")
-    application = df.iloc[args.row][features].to_dict()
-    result = score(application, model, features, model_meta.version, threshold=args.threshold)
-    print(result)
+    if predict_on_sample:
+        application = create_sample_input()
+    elif predict_on_all_missing_inputs:
+        application = create_all_missing_input(features)
+    elif predict_on_empty_input:
+        application = create_empty_input()
+    else:
+        df = data_loader.load_data(filename=data_key)
+        if row >= len(df):
+            raise IndexError(f"Row {row} is out of bounds for data file with {len(df)} rows.")
+        application = df.iloc[row][features].to_dict()
+    result = score(application, model, features, model_meta.version, threshold=threshold)
+    return json.dumps(result)
+
+
 
 if __name__ == "__main__":
-    main()
+    parser = argparse.ArgumentParser(description="Score an application using a model.")
+    parser.add_argument("--model", type=str, default=None, help="Path to model .pkl file (default: use active model in registry)")
+    parser.add_argument("--data", type=str, default=None, help="Data CSV to score (default: use model's trained_on field). Example: applications_v1.csv")
+    parser.add_argument("--row", type=int, default=0, help="Row index to score from the data file (default: 0)")
+    parser.add_argument("--predict-on-sample", action="store_true", help="Whether to predict on a hardcoded sample input instead of loading data from CSV", default=False)
+    parser.add_argument("--predict-on-all-missing-inputs", action="store_true", help="Predict on input containing all NaN values instead of loading data from CSV", default=False)
+    parser.add_argument("--predict-on-empty-input", action="store_true", help="Predict on input containing no features instead of loading data from CSV", default=False)
+    parser.add_argument("--threshold", type=float, default=THRESHOLD, help="Threshold for block/allow decision (default: 0.5)")
+    args = parser.parse_args()
+    result_json = get_prediction(
+        model_path=args.model,
+        data=args.data,
+        row=args.row,
+        predict_on_sample=args.predict_on_sample,
+        predict_on_all_missing_inputs=args.predict_on_all_missing_inputs,
+        predict_on_empty_input=args.predict_on_empty_input,
+        threshold=args.threshold
+    )
+    print(result_json)

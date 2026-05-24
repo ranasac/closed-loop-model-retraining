@@ -11,7 +11,7 @@
   "candidates": [
     {
       "version": "v2",
-      "artifact_path": "models/logistic_regression_20260524_1407.pkl",
+      "artifact_path": "models/logistic_regression_20260524_1538.pkl",
       "trained_on": "data/applications_v1.csv",
       "created_at": "2026-05-24",
       "accuracy": 1.0,
@@ -20,25 +20,7 @@
     },
     {
       "version": "v3",
-      "artifact_path": "models/logistic_regression_20260524_1445.pkl",
-      "trained_on": "data/applications_v2.csv",
-      "created_at": "2026-05-24",
-      "accuracy": 0.9983,
-      "pr_auc": 0.9994,
-      "recall_at_95precision": 1.0
-    },
-    {
-      "version": "v4",
-      "artifact_path": "models/logistic_regression_20260524_1446.pkl",
-      "trained_on": "data/applications_v2.csv",
-      "created_at": "2026-05-24",
-      "accuracy": 0.9942,
-      "pr_auc": 0.9716,
-      "recall_at_95precision": 0.881
-    },
-    {
-      "version": "v5",
-      "artifact_path": "models/logistic_regression_20260524_1516.pkl",
+      "artifact_path": "models/logistic_regression_20260524_1538.pkl",
       "trained_on": "data/applications_v2.csv",
       "created_at": "2026-05-24",
       "accuracy": 0.9942,
