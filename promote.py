@@ -9,6 +9,7 @@ to history, and setting the candidate to active.
 """
 import argparse
 import json
+import os
 import pickle
 from pathlib import Path
 from datetime import datetime
@@ -16,20 +17,9 @@ from datetime import datetime
 import pandas as pd
 import numpy as np
 from modeling.models_api import BaseMlModel
-
-REGISTRY_PATH = Path(__file__).parent / "registry.json"
-DATA_PATH = Path(__file__).parent / "data" / "applications_v1.csv"
-
-FEATURES = [
-    "application_completion_seconds",
-    "hour_of_day",
-    "email_domain_risk_score",
-    "account_age_days",
-    "num_applications_last_24h",
-    "ip_location_mismatch_km",
-    "is_vpn_or_proxy",
-    "profile_trust_score",
-]
+from modeling.data_preprocessor import FraudDataPreprocessor
+from config import REGISTRY_PATH, DATA_DIR
+from dataloader.load_data import FraudDataLoader
 
 
 def load_model(path):
@@ -45,14 +35,34 @@ def evaluate_model(model, X: pd.DataFrame, y: pd.Series) -> dict:
     y_scores = model.predict_proba(X)
     return BaseMlModel.evaluate(y, y_scores, target_precision=0.95, threshold=0.5)
 
+def get_model_latency(model, X):
+    import time
+    start_time = time.time()
+    model.predict(X)
+    end_time = time.time()
+    latency_ms = (end_time - start_time) * 1000
+    return latency_ms
+
+def check_no_errors(model, X):
+    try:
+        model.predict(X)
+        return True
+    except Exception as e:
+        print(f"Model prediction error: {e}")
+        return False
+
 
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--candidate", required=True, help="Path to candidate .pkl")
+    parser.add_argument("--data_filename", default="applications_v1.csv", help="Path to evaluation data CSV")
+    parser.add_argument("--target-latency-in-ms", type=int, default=100, help="Maximum acceptable latency for model predictions")
     args = parser.parse_args()
     
     candidate_path_str = args.candidate
     candidate_path_obj = Path(candidate_path_str)
+    data_filename = args.data_filename
+    target_latency_in_ms = args.target_latency_in_ms
 
     # 1. Load active registry registry structure
     with open(REGISTRY_PATH) as f:
@@ -72,11 +82,12 @@ def main():
         candidate_meta = {
             "version": candidate_path_obj.stem,
             "artifact_path": candidate_path_str,
-            "trained_on": str(DATA_PATH.relative_to(Path(__file__).parent)),
+            "trained_on": str(Path(DATA_DIR, data_filename).relative_to(Path(__file__).parent)),
             "created_at": datetime.today().strftime('%Y-%m-%d')
         }
 
     active_path = registry["active"]["artifact_path"]
+    active_model_meta = registry["active"].copy()
     active_model = load_model(active_path)
     candidate_model = load_model(candidate_path_str)
 
@@ -86,27 +97,42 @@ def main():
         if not hasattr(classifier, 'multi_class'):
             classifier.multi_class = 'deprecated'
 
-    df = pd.read_csv(DATA_PATH)
-    X = df[FEATURES]
-    y = df["label"]
+    model_dict = {"active": (active_model, active_model_meta), "candidate": (candidate_model, candidate_meta)}
 
-    # 3. Process complete mathematical diagnostics
-    active_model_eval_report = evaluate_model(active_model, X, y)
-    candidate_model_eval_report = evaluate_model(candidate_model, X, y)
-    
-    print(f"Active model evaluation report:\n{active_model_eval_report}")
-    print(f"Candidate model evaluation report:\n{candidate_model_eval_report}")
+    for key, (model, meta) in model_dict.items():
+        if not hasattr(model, 'predict_proba'):
+            raise ValueError(f"Model {meta['version']} does not have predict_proba method. Ensure it is a scikit-learn compatible classifier.")
+        
+        # load data
+        data_loader = FraudDataLoader()
+        input_features = data_loader.get_features_for_version(filename=meta['trained_on'])
+        print(f"Input features for {meta['trained_on']}: {input_features}")
+        df = data_loader.load_data(filename=meta['trained_on'])
 
-    active_acc = accuracy(active_model, X, y)
-    candidate_acc = accuracy(candidate_model, X, y)
+        # create preprocessor instance with input features for validation and preprocessing
+        preprocessor = FraudDataPreprocessor(input_features=input_features)
+        preprocessor.validate_input_features(df)    
 
-    print(f"Active accuracy:    {active_acc:.4f}")
-    print(f"Candidate accuracy: {candidate_acc:.4f}")
+        # get features and target
+        X = df[input_features]
+        y = df["label"]
+
+        print("calculating evaluation metrics...")
+        model_eval_report = evaluate_model(model, X, y)
+        print("checking for prediction errors...")
+        if not check_no_errors(model, X):
+            raise ValueError(f"Model {meta['version']} failed prediction error check.")
+        
+        model_latency = get_model_latency(model, X)
+        model_eval_report["latency_ms"] = round(model_latency, 2)
+        model_dict[key] = (model, meta, model_eval_report)
+        print(f"{key.capitalize()} model evaluation report:\n{model_eval_report}")
 
     # 4. Strict Closed-Loop Operational Validation Barriers
-    if ((candidate_acc > active_acc) and 
-        (candidate_model_eval_report["pr_auc"] >= active_model_eval_report["pr_auc"]) and 
-        (candidate_model_eval_report["recall_at_95precision"] >= active_model_eval_report["recall_at_95precision"])):
+    if ((model_dict['candidate'][2]['accuracy'] > model_dict['active'][2]['accuracy']) and 
+        (model_dict['candidate'][2]['pr_auc'] >= model_dict['active'][2]['pr_auc']) and 
+        (model_dict['candidate'][2]['recall_at_95precision'] >= model_dict['active'][2]['recall_at_95precision']) and
+        (model_dict['candidate'][2]['latency_ms'] <= target_latency_in_ms)):
         
         print("PROMOTE")
 
@@ -121,9 +147,9 @@ def main():
         registry["history"].append(old_active)
 
         # Update candidate metadata dictionary with actual live evaluated metrics 
-        candidate_meta["accuracy"] = round(float(candidate_acc), 4)
-        candidate_meta["pr_auc"] = round(float(candidate_model_eval_report["pr_auc"]), 4)
-        candidate_meta["recall_at_95precision"] = round(float(candidate_model_eval_report["recall_at_95precision"]), 4)
+        candidate_meta["accuracy"] = round(float(model_dict['candidate'][2]['accuracy']), 4)
+        candidate_meta["pr_auc"] = round(float(model_dict['candidate'][2]['pr_auc']), 4)
+        candidate_meta["recall_at_95precision"] = round(float(model_dict['candidate'][2]['recall_at_95precision']), 4)
 
         # Swap candidate to active seat
         registry["active"] = candidate_meta

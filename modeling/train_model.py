@@ -1,12 +1,18 @@
 
 import os
+import sys
 import argparse
-import pandas as pd
 
+# --- Ensure project root is in sys.path for imports ---
+PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+if PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, PROJECT_ROOT)
+
+import pandas as pd
+from config import MODEL_DIR, DATA_DIR
 from modeling.models_api import LogisticRegressionModel, LightGbmClassifierModel
 from dataloader.load_data import FraudDataLoader
 from modeling.data_preprocessor import FraudDataPreprocessor
-from config import MODEL_DIR
 
 # create enum for model types
 class ModelType:
@@ -17,10 +23,13 @@ def main(input_data_filename,
           features_to_drop=None,
           variance_threshold=0.0,
           target_column="label",
-          model_type=ModelType.LOGISTIC_REGRESSION):
+          model_type=ModelType.LOGISTIC_REGRESSION,
+          target_precision=0.95):
     # Load data
     data_loader = FraudDataLoader()
     df = data_loader.load_data(filename=input_data_filename)
+    input_features = data_loader.get_features_for_version(filename=input_data_filename)
+    print(f"Input features for {input_data_filename}: {input_features}")
 
     # Preprocess data if needed (e.g., handle missing values, encode categorical features)
     preprocessor = FraudDataPreprocessor(features_to_drop=features_to_drop, variance_threshold=variance_threshold)
@@ -53,7 +62,12 @@ def main(input_data_filename,
     shap_values = model.get_feature_importances_using_shap(X=X_val)
     print(f"SHAP values:\n{shap_values}")
 
-    model.save_model(f"{model_type}_{pd.Timestamp.now().strftime('%Y%m%d_%H%M')}")
+    model_name = f"{model_type}_{pd.Timestamp.now().strftime('%Y%m%d_%H%M')}"
+
+    model.save_model(model_name=model_name)
+
+    # Log model details to registry
+    model.register_model(model_name=model_name, trained_on=os.path.join(DATA_DIR, input_data_filename), X_test=X_test, y_test=y_test, target_precision=target_precision)
 
 
 if __name__ == "__main__":
@@ -65,6 +79,12 @@ if __name__ == "__main__":
     parser.add_argument("--variance_threshold", type=float, default=0.0, help="Variance threshold for feature selection")
     parser.add_argument("--target_column", type=str, default="label", help="Target column name")
     parser.add_argument("--model_type", type=str, default=ModelType.LOGISTIC_REGRESSION, help="Type of model to train (logistic_regression or lightgbm)")
+    parser.add_argument("--target_precision", type=float, default=0.95, help="Target precision for model registration")
     args = parser.parse_args()
 
-    main(input_data_filename=args.input_data_filename, features_to_drop=args.features_to_drop, variance_threshold=args.variance_threshold, target_column=args.target_column, model_type=args.model_type)
+    main(input_data_filename=args.input_data_filename,
+          features_to_drop=args.features_to_drop,
+            variance_threshold=args.variance_threshold,
+              target_column=args.target_column,
+                model_type=args.model_type,
+                  target_precision=args.target_precision)

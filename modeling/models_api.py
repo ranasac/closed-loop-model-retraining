@@ -1,7 +1,9 @@
+import json
 import os
+import pandas as pd
 import joblib
 import pickle
-from config import MODEL_DIR
+from config import MODEL_DIR, REGISTRY_PATH
 from sklearn.linear_model import LogisticRegression
 from sklearn.pipeline import Pipeline
 from sklearn.compose import ColumnTransformer
@@ -12,6 +14,9 @@ from sklearn.metrics import accuracy_score, precision_recall_curve, auc
 
 import lightgbm as lgb
 import numpy as np
+
+from datetime import datetime
+import re
 
 
 class PandasCategoryEncoder(OneToOneFeatureMixin, BaseEstimator, TransformerMixin):
@@ -218,6 +223,91 @@ class BaseMlModel:
 
         # Sort descending so the highest impact features sit at the top
         return importance_df.sort_values(by="mean_abs_shap", ascending=False).reset_index(drop=True)
+    
+    
+    def register_model(self, model_name, trained_on, X_test, y_test, target_precision=0.95):
+        """
+        Registers a newly trained model as a candidate in the central registry,
+        automatically calculating production metrics and incrementing the version.
+        """
+
+        # 1. Load existing registry data or build a clean fallback structure
+        if os.path.exists(REGISTRY_PATH):
+            with open(REGISTRY_PATH, "r") as f:
+                try:
+                    registry_data = json.load(f)
+                except json.JSONDecodeError:
+                    registry_data = {"active": {}, "candidates": [], "history": []}
+        else:
+            registry_data = {"active": {}, "candidates": [], "history": []}
+
+        # Ensure all required root array keys are present
+        for key in ["candidates", "history"]:
+            if key not in registry_data:
+                registry_data[key] = []
+
+        # 2. Extract versions across Active, Candidates, and History to determine the next version
+        all_versions = []
+        
+        # Check active slot
+        if registry_data.get("active") and "version" in registry_data["active"]:
+            all_versions.append(registry_data["active"]["version"])
+            
+        # Check candidates list
+        for candidate in registry_data["candidates"]:
+            if "version" in candidate:
+                all_versions.append(candidate["version"])
+                
+        # Check history array
+        for historical in registry_data["history"]:
+            if "version" in historical:
+                all_versions.append(historical["version"])
+
+        # Dig out integer version IDs (e.g., extracting 1 from "v1")
+        version_numbers = []
+        for v in all_versions:
+            match = re.search(r'\d+', str(v))
+            if match:
+                version_numbers.append(int(match.group()))
+
+        # Determine next integer index or default to 1 if the registry is brand new
+        next_version_num = max(version_numbers) + 1 if version_numbers else 1
+        next_version_str = f"v{next_version_num}"
+
+        # 3. Calculate full structural validation metrics via self.evaluate
+        eval_metrics = self.get_trained_classifier_metrics(
+            X_test, y_test, target_precision=target_precision
+        )
+
+
+        # 4. Construct candidate metadata tracking block matching promote.py requirements
+        artifact_abs_path = os.path.join(self.model_dir, f"{model_name}.pkl")
+        artifact_relative_path = os.path.relpath(artifact_abs_path, start=os.getcwd())
+        if os.path.isabs(str(trained_on)):
+            trained_on_relative = os.path.relpath(str(trained_on), start=os.getcwd())
+        else:
+            trained_on_relative = str(trained_on)
+
+        new_candidate = {
+            "version": next_version_str,
+            "artifact_path": artifact_relative_path,
+            "trained_on": trained_on_relative,
+            "created_at": datetime.today().strftime('%Y-%m-%d')
+        }
+
+        # Safely convert all metrics values to clean Python floats for clean JSON formatting
+        for metric_name, metric_val in eval_metrics.items():
+            new_candidate[metric_name] = round(float(metric_val), 4)
+
+        # 5. Append candidate profile into the pool 
+        registry_data["candidates"].append(new_candidate)
+
+        # 6. Atomic save back to system storage
+        with open(REGISTRY_PATH, "w") as f:
+            json.dump(registry_data, f, indent=2)
+
+        print(f"Successfully registered model candidate as '{next_version_str}' in {REGISTRY_PATH}")
+        print(f"Evaluated Test Metrics: {eval_metrics}")
 
     
 

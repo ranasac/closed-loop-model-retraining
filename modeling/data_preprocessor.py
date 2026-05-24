@@ -14,16 +14,25 @@ class BaseDataPreprocessor:
 
 class FraudDataPreprocessor(BaseDataPreprocessor):
 
-    def __init__(self, features_to_drop=None, variance_threshold=0.0):
+    def __init__(self, features_to_drop=None, variance_threshold=0.0, input_features=None):
         super().__init__()
         self.features_to_drop = features_to_drop
         self.variance_threshold = variance_threshold
         self.categorical_features = None
         self.numerical_features = None
+        self.input_features = input_features
+
+    def validate_input_features(self, X):
+        if self.input_features is not None:
+            missing_features = set(self.input_features) - set(X.columns)
+            if missing_features:
+                raise ValueError(f"Input features {missing_features} are missing from the dataset.") 
+            
 
     def preprocess_inputs(self, X):
         # Implement any necessary preprocessing steps here (e.g., handling missing values, encoding categorical variables, feature engineering)
         # For example, you might want to fill missing values with the median for numerical features and the mode for categorical features, or create new features based on domain knowledge.
+        self.validate_input_features(X)
         X = self.drop_features_adhoc_features(X)
         X = self.drop_features_containing_zero_variance(X)
         self.categorical_features, self.numerical_features = self.get_categorical_and_numerical_features(X)

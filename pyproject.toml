@@ -1,3 +1,4 @@
+
 [build-system]
 requires = ["setuptools", "wheel"]
 build-backend = "setuptools.build_meta"
@@ -17,7 +18,8 @@ dependencies = [
     "lightgbm>=4.6.0",
     "mlflow>=2.21.3",
     "skl2onnx>=1.16.0",
-    "shap>=0.46.0"            # Force a modern version to stop it from falling back to old numba
+    "shap>=0.46.0",            # Force a modern version to stop it from falling back to old numba
+    "pytest>=7.0"
 ]
 
 [tool.setuptools.packages.find]
