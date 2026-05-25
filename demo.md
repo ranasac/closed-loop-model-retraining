@@ -15,7 +15,8 @@ These are the steps for the video demo.
 ## Remote Deployment using Github CI/CD --> Show Github Actions Workflow
 1. Upon push to `main` the workflow will trigger automatically and deploy the `active` model from the `registry.json` to google cloud run
 2. By default it will only deploy on 10% traffic which we can increase later on.
-3. For production monitoring, use Opentelemetry, Sentry, Datadog to log all metrics for dashboarding
+3. For production monitoring, use Opentelemetry, Sentry, Datadog to log all metrics for dashboarding. 
+    - Need to monitor metrics request count, error count, latency, custom metrics such as rolling_avg_ml_model_score_last_1hour, rolling_avg_flag_rate_last_1d etc.
 4. We need to hook a database, in this case we can use a SQL database such as Postgress to save all prod data
 
 
