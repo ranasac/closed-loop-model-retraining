@@ -1,5 +1,8 @@
 # Closed-Loop Model Retraining Design
 
+# For info about how to run the code, see `demo.md` and checkout my video walkthrough
+
+
 ## 1. Executive Summary
 This design upgrades a manually operated binary classification system into a maintainable, auditable, closed-loop ML platform. The system keeps entity-level label quality at the center, monitors online behavior in realtime and lagged feedback, and triggers retraining based on measurable conditions instead of ad hoc runs.
 

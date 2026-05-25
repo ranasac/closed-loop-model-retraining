@@ -1,13 +1,42 @@
 {
   "active": {
-    "version": "v1",
-    "artifact_path": "models/model.pkl",
+    "version": "v2",
+    "artifact_path": "models/logistic_regression_20260524_2146.pkl",
     "trained_on": "data/applications_v1.csv",
-    "created_at": "2025-08-14",
-    "accuracy": 0.9994,
-    "pr_auc": null,
-    "recall_at_95precision": null
+    "created_at": "2026-05-24",
+    "accuracy": 1.0,
+    "pr_auc": 1.0,
+    "recall_at_95precision": 1.0
   },
-  "candidates": [],
-  "history": []
+  "candidates": [
+    {
+      "version": "v3",
+      "artifact_path": "models/logistic_regression_20260524_2147.pkl",
+      "trained_on": "data/applications_v2.csv",
+      "created_at": "2026-05-24",
+      "accuracy": 0.9942,
+      "pr_auc": 0.9716,
+      "recall_at_95precision": 0.881
+    },
+    {
+      "version": "v4",
+      "artifact_path": "models/lightgbm_20260524_2150.pkl",
+      "trained_on": "data/applications_v1.csv",
+      "created_at": "2026-05-24",
+      "accuracy": 0.96,
+      "pr_auc": 0.999,
+      "recall_at_95precision": 1.0
+    }
+  ],
+  "history": [
+    {
+      "version": "v1",
+      "artifact_path": "models/model.pkl",
+      "trained_on": "data/applications_v1.csv",
+      "created_at": "2025-08-14",
+      "accuracy": 0.9994,
+      "pr_auc": null,
+      "recall_at_95precision": null
+    }
+  ]
 }
