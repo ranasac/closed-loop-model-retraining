@@ -8,6 +8,7 @@ These are the steps for the video demo.
     ```
     curl -X POST "http://127.0.0.1:8000/predict" -H "Content-Type: application/json" -d '{"data": {"application_completion_seconds": 45.0, "hour_of_day": 3, "email_domain_risk_score": 0.7, "account_age_days": 4, "num_applications_last_24h": 9, "ip_location_mismatch_km": 3200.0, "is_vpn_or_proxy": 1, "profile_trust_score": 0.2}}'
     ```
+4. In production, this API would be called by something like a Kafka Consumer or it would listen to a Service Bus/ SQS/ RabbitMQ queue etc.
 
 
 
@@ -63,6 +64,9 @@ Here is the code walkthrough
     - Run promotion gate `python promote.py --candidate models/logistic_regression_20260524_1538.pkl`
         - If promoted, we should see the `registry.json` would get automatically updated
         - run promotion gate again on different versioned dataset to show cross versioned datasets trained model can be compared as well seamlessly
+        - **Promotion Gate Logic**
+             - Promote if candidate models accuracy, auc, recall@95Precision are higher than that of active model. 
+            - Also, check if candidate model latency is under acceptable adhoc threshold of 100ms
 
     - Predict using `python predict.py --model models/logistic_regression_20260524_1538.pkl --predict-on-sample`
 
@@ -80,6 +84,9 @@ Here is the code walkthrough
         - all inputs are NaN 
         - all features are missing i.e. empty payload
     - run tests using `make test`
+
+
+
 
 
 
