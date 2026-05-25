@@ -209,6 +209,7 @@ name = "closed-loop-model-retraining"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [
+    { name = "fastapi" },
     { name = "lightgbm" },
     { name = "mlflow" },
     { name = "numpy" },
@@ -221,6 +222,7 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
+    { name = "fastapi", specifier = ">=0.110.0" },
     { name = "lightgbm", specifier = ">=4.6.0" },
     { name = "mlflow", specifier = ">=2.21.3" },
     { name = "numpy", specifier = ">=1.24,<2.1" },

@@ -1,0 +1,13 @@
+version: '3.8'
+services:
+  api:
+    build: .
+    image: closed-loop-api
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./models:/app/models
+      - ./data:/app/data
+    environment:
+      - PYTHONUNBUFFERED=1
+    restart: unless-stopped

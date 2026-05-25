@@ -19,6 +19,7 @@ dependencies = [
     "mlflow>=2.21.3",
     "skl2onnx>=1.16.0",
     "shap>=0.46.0",            # Force a modern version to stop it from falling back to old numba
+    "fastapi>=0.110.0",
     "pytest>=7.0"
 ]
 

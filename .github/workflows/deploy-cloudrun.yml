@@ -1,0 +1,52 @@
+name: Build and Deploy to Cloud Run
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    env:
+      PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
+      GAR_LOCATION: ${{ secrets.GCP_REGION }}
+      REPOSITORY: ${{ secrets.GCP_REPOSITORY }}
+      SERVICE: ${{ secrets.CLOUDRUN_SERVICE }}
+      REGION: ${{ secrets.GCP_REGION }}
+      IMAGE: ${{ secrets.GCP_IMAGE_NAME }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Google Cloud SDK
+        uses: google-github-actions/setup-gcloud@v2
+        with:
+          project_id: ${{ secrets.GCP_PROJECT_ID }}
+          service_account_key: ${{ secrets.GCP_SA_KEY }}
+          export_default_credentials: true
+
+      - name: Configure Docker for Artifact Registry
+        run: |
+          gcloud auth configure-docker $GAR_LOCATION-docker.pkg.dev
+
+      - name: Build Docker image
+        run: |
+          docker build -t $GAR_LOCATION-docker.pkg.dev/$PROJECT_ID/$REPOSITORY/$IMAGE:$GITHUB_SHA .
+
+      - name: Push Docker image to Artifact Registry
+        run: |
+          docker push $GAR_LOCATION-docker.pkg.dev/$PROJECT_ID/$REPOSITORY/$IMAGE:$GITHUB_SHA
+
+      - name: Deploy to Cloud Run
+        run: |
+          gcloud run deploy $SERVICE \
+            --image $GAR_LOCATION-docker.pkg.dev/$PROJECT_ID/$REPOSITORY/$IMAGE:$GITHUB_SHA \
+            --region $REGION \
+            --platform managed \
+              --min-instances 1 \
+              --max-instances 5 \
+              --cpu 1 \
+              --memory 1Gi \
+            --quiet  \
+            --traffic latest=10

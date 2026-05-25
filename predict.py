@@ -50,6 +50,11 @@ def load_model_and_meta(model_path=None):
     model_meta = ModelEntry.model_validate(meta)
     with open(model_path, "rb") as f:
         model = pickle.load(f)
+    # Patches legacy model profiles to match modern scikit-learn namespaces safely
+    for model_obj in [model]:
+        classifier = model_obj.named_steps['classifier'] if hasattr(model_obj, 'named_steps') else model_obj
+        if not hasattr(classifier, 'multi_class'):
+            classifier.multi_class = 'deprecated'
     return model, model_meta
 
 
@@ -105,11 +110,7 @@ def get_prediction(
     threshold=THRESHOLD
 ):
     model, model_meta = load_model_and_meta(model_path)
-    # Patches legacy model profiles to match modern scikit-learn namespaces safely
-    for model_obj in [model]:
-        classifier = model_obj.named_steps['classifier'] if hasattr(model_obj, 'named_steps') else model_obj
-        if not hasattr(classifier, 'multi_class'):
-            classifier.multi_class = 'deprecated'
+
 
     trained_on = model_meta.trained_on
     import sys
